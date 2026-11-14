@@ -1,3 +1,20 @@
+#!/usr/bin/env python3
+"""
+استخراج بيانات ARPEGE 0.1° (Météo-France) لمدن الجزائر وكتابتها في arpege.json
+بنفس شكل أيام/ساعات الـ Worker (days / hours) ليسهل الدمج مع MET Norway.
+
+المصدر: ملفات GRIB2 المفتوحة (Licence Ouverte 2.0) عبر مكتبة meteofetch، بدون مفتاح.
+الإسناد المطلوب: "Source : Météo-France".
+
+الاستعمال:
+    python extract_arpege.py --discover      # يطبع أسماء الحقول المتاحة فعلاً (شغّله مرة أولى)
+    python extract_arpege.py --out arpege.json
+
+ملاحظات:
+  - شبكة EURAT01 تغطي 20N–72N و32W–42E. مدينة "عين قزام" (19.57N) خارجها فتُترك لـ MET وحده.
+  - أسماء الحقول أدناه مرشّحة (CANDIDATES) وتُختار أول ما يوجد؛ إن اختلفت عندك
+    فالأمر --discover سيريك الأسماء الحقيقية لتعديل القاموس.
+"""
 import argparse
 import json
 import sys
@@ -27,7 +44,7 @@ CANDIDATES = {
         "gust": ["fg10", "10fg", "i10fg"], "precip": ["tp", "tirf", "tprate"],
         "cloud": ["tcc"], "rh": ["r2", "2r"], "pres": ["msl", "prmsl"],
     },
-    "SP2": {"d2m": ["d2m", "2d"], "sp": ["sp"], "cloud": ["tcc"], "rh": ["r2", "2r"]},
+    "SP2": {"d2m": ["d2m", "2d"], "sp": ["sp"], "lcc": ["lcc"], "mcc": ["mcc"], "hcc": ["hcc"]},
 }
 
 
@@ -53,8 +70,6 @@ def normalize(concept, s):
         s = s - 273.15
     if concept in ("pres", "sp") and np.nanmean(s) > 2000:
         s = s / 100.0
-    if concept in ("cloud", "rh") and np.nanmax(s) <= 1.5:
-        s = s * 100.0
     return s
 
 
@@ -116,9 +131,15 @@ def build_days(ser, now_utc):
     t = ser["t2m"]
     idx = t.index
     df = pd.DataFrame({"t": t})
-    for c in ("u10", "v10", "gust", "cloud", "rh", "pres", "d2m", "sp"):
+    for c in ("u10", "v10", "gust", "cloud", "rh", "pres", "d2m", "sp", "lcc", "mcc", "hcc"):
         if c in ser:
             df[c] = ser[c].reindex(idx, method="nearest", tolerance=pd.Timedelta(hours=3))
+    if "cloud" not in df and {"lcc", "mcc", "hcc"} <= set(df.columns):
+        # تقدير الغيوم الكلية من الطبقات: متوسط حدّي التداخل (أقصى تداخل / تداخل عشوائي)
+        l, m, h = (df[c].clip(0, 100) / 100.0 for c in ("lcc", "mcc", "hcc"))
+        rand = 1 - (1 - l) * (1 - m) * (1 - h)
+        mx = np.maximum(np.maximum(l, m), h)
+        df["cloud"] = 100.0 * (rand + mx) / 2.0
     if "rh" not in df and "d2m" in df:
         df["rh"] = rh_from_dewpoint(df["t"], df["d2m"])
     if "pres" not in df and "sp" in df:
