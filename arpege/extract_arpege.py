@@ -24,6 +24,9 @@ import numpy as np
 import pandas as pd
 
 TZ_HOURS = 1  # الجزائر UTC+1
+# عتبات إشارة "احتمال رعد": تقدير قابل للضبط (لم تُعايَر بقياسات)
+CAPE_MIN = 500.0   # طاقة الحمل (جول/كغ) على الأقل
+CP_MIN = 0.3       # معدل الهطول الحملي (ملم/س) على الأقل
 DOMAIN = {"lat_min": 20.0, "lat_max": 72.0, "lon_min": -32.0, "lon_max": 42.0}
 
 CITIES = [
@@ -43,8 +46,9 @@ CANDIDATES = {
         "t2m": ["t2m", "2t"], "u10": ["u10", "10u"], "v10": ["v10", "10v"],
         "gust": ["fg10", "10fg", "i10fg"], "precip": ["tp", "tirf", "tprate"],
         "cloud": ["tcc"], "rh": ["r2", "2r"], "pres": ["msl", "prmsl"],
+        "cp": ["cp"], "snow": ["tsnowp"],
     },
-    "SP2": {"d2m": ["d2m", "2d"], "sp": ["sp"], "lcc": ["lcc"], "mcc": ["mcc"], "hcc": ["hcc"]},
+    "SP2": {"d2m": ["d2m", "2d"], "sp": ["sp"], "lcc": ["lcc"], "mcc": ["mcc"], "hcc": ["hcc"], "cape": ["CAPE_INS"], "ptype": ["ptype"]},
 }
 
 
@@ -126,12 +130,26 @@ def precip_per_step(s):
     return s.clip(lower=0)
 
 
+def per_hour(s):
+    """هطول تراكمي → معدل ملم/ساعة لكل خطوة."""
+    d = precip_per_step(s)
+    h = pd.Series(s.index, index=s.index).diff().dt.total_seconds().div(3600).bfill().clip(lower=1)
+    return d / h
+
+
+def ptype_codes(s, key):
+    """القيم المختلفة لحقل نوع الهطول في يوم ما (للتعلّم من ترميزه)."""
+    if s is None:
+        return None
+    loc = (s.index + pd.Timedelta(hours=TZ_HOURS)).strftime("%Y-%m-%d")
+    vals = s[loc == key].dropna()
+    return sorted({round(float(v), 1) for v in vals})[:8]
 def build_days(ser, now_utc):
     keys = [(now_utc + pd.Timedelta(hours=TZ_HOURS + 24 * o)).strftime("%Y-%m-%d") for o in range(3)]
     t = ser["t2m"]
     idx = t.index
     df = pd.DataFrame({"t": t})
-    for c in ("u10", "v10", "gust", "cloud", "rh", "pres", "d2m", "sp", "lcc", "mcc", "hcc"):
+    for c in ("u10", "v10", "gust", "cloud", "rh", "pres", "d2m", "sp", "lcc", "mcc", "hcc", "cape"):
         if c in ser:
             df[c] = ser[c].reindex(idx, method="nearest", tolerance=pd.Timedelta(hours=3))
     if "cloud" not in df and {"lcc", "mcc", "hcc"} <= set(df.columns):
@@ -148,6 +166,8 @@ def build_days(ser, now_utc):
         df["ws"] = np.hypot(df["u10"], df["v10"])
         df["dir"] = (np.degrees(np.arctan2(-df["u10"], -df["v10"])) % 360)
     prec = precip_per_step(ser["precip"]) if "precip" in ser else None
+        cp_rate = per_hour(ser["cp"]) if "cp" in ser else None
+    snow_rate = per_hour(ser["snow"]) if "snow" in ser else None
     step_h = pd.Series(idx, index=idx).diff().dt.total_seconds().div(3600).bfill().clip(lower=1)
 
     df["local"] = idx + pd.Timedelta(hours=TZ_HOURS)
@@ -172,6 +192,10 @@ def build_days(ser, now_utc):
             pr = None
             if prec is not None and ts in prec.index:
                 pr = prec.loc[ts] / float(step_h.loc[ts])
+            cape = float(row["cape"]) if "cape" in d and not pd.isna(row["cape"]) else None
+            cpr = cp_rate.get(ts) if cp_rate is not None else None
+            snr = snow_rate.get(ts) if snow_rate is not None else None
+            thunder = bool(cape is not None and cpr is not None and cape >= CAPE_MIN and cpr >= CP_MIN)
             hours.append({
                 "datetime": f"{row['local'].hour:02d}:00:00",
                 "temp": r1(row["t"]),
@@ -179,6 +203,9 @@ def build_days(ser, now_utc):
                 "cloudcover": r1(row["cloud"]) if "cloud" in d else None,
                 "windspeed": r1(row["ws"] * 3.6) if "ws" in d else None,
                 "windgust": r1(row["gust"] * 3.6) if "gust" in d else None,
+                "snow": r1(snr),
+                "thunder": thunder,
+                "cape": int(round(cape)) if cape is not None else None,
             })
         days.append({
             "datetime": k,
@@ -192,10 +219,13 @@ def build_days(ser, now_utc):
             "winddir": int(round(d["dir"].mean())) if "dir" in d else None,
             "pressure": r1(d["pres"].mean()) if "pres" in d else None,
             "cloudcover": r1(d["cloud"].mean()) if "cloud" in d else None,
+            "cape_max": r1(d["cape"].max()) if "cape" in d else None,
+            "thunder_hours": sum(1 for h in hours if h["thunder"]),
+            "ptype_codes": ptype_codes(ser.get("ptype"), k),
             "hours": hours,
         })
     return days
-
+                
 
 def run(fields, now_utc=None):
     now_utc = now_utc or pd.Timestamp.utcnow().tz_localize(None)
