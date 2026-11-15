@@ -166,7 +166,7 @@ def build_days(ser, now_utc):
         df["ws"] = np.hypot(df["u10"], df["v10"])
         df["dir"] = (np.degrees(np.arctan2(-df["u10"], -df["v10"])) % 360)
     prec = precip_per_step(ser["precip"]) if "precip" in ser else None
-        cp_rate = per_hour(ser["cp"]) if "cp" in ser else None
+    cp_rate = per_hour(ser["cp"]) if "cp" in ser else None
     snow_rate = per_hour(ser["snow"]) if "snow" in ser else None
     step_h = pd.Series(idx, index=idx).diff().dt.total_seconds().div(3600).bfill().clip(lower=1)
 
