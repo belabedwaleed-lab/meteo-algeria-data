@@ -2,7 +2,7 @@ name: ARPEGE Algeria
 
 on:
   schedule:
-    - cron: "40 4,10,16,22 * * *"
+    - cron: "20 */3 * * *"
   workflow_dispatch:
     inputs:
       discover:
