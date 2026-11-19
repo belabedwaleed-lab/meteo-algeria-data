@@ -235,9 +235,6 @@ def run(fields, now_utc=None):
             skipped.append(name)
             continue
         ser = city_series(fields, lat, lon)
-        if name == "قسنطينة":
-            p = ser.get("precip")
-            log("DEBUG tp", len(p), [f"{t:%d %H}:{v:.1f}" for t, v in p.items()])
         if "t2m" not in ser:
             raise RuntimeError("حقل الحرارة غير موجود — شغّل --discover وعدّل CANDIDATES")
         days = build_days(ser, now_utc)
