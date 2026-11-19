@@ -123,7 +123,7 @@ def city_series(fields, lat, lon):
 def precip_per_step(s):
     """تراكمي منذ بداية التشغيلة؟ نحوّله إلى كمية كل خطوة، وإلا نعتبره لكل خطوة."""
     d = s.diff()
-    if s.is_monotonic_increasing and s.iloc[-1] > 0:
+    if (d.dropna() >= -0.05).all() and s.iloc[-1] > 0:
         log("  الهطول: تراكمي (يُشتق الفرق بين الخطوات)")
         d.iloc[0] = s.iloc[0]
         return d.clip(lower=0)
